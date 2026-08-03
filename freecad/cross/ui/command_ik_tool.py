@@ -261,10 +261,10 @@ def _slerp_rotation(
     Edge cases handled:
     - theta ≈ 0   (nearly identical orientations): returns R_target directly.
     - theta ≈ π   (nearly opposite orientations): sin(theta) → 0, axis is
-                ill-defined by this formula. Returns R_start for alpha < 1,
-                R_target for alpha >= 1 to avoid NaN/inf in the axis vector.
-                A full antipodal SLERP would require quaternions; this is a
-                safe conservative fallback for the incremental-IK use case.
+                    ill-defined by this formula. Returns R_start for alpha < 1,
+                    R_target for alpha >= 1 to avoid NaN/inf in the axis vector.
+                    A full antipodal SLERP would require quaternions; this is a
+                    safe conservative fallback for the incremental-IK use case.
     """
     R_rel = R_start.T @ R_target
     theta = np.arccos(np.clip((np.trace(R_rel) - 1) / 2.0, -1.0, 1.0))
@@ -294,21 +294,38 @@ def _slerp_rotation(
 
 def _read_joint_positions(
     joint_objects: list[fc.App.DocumentObject],
+    robot_obj: fc.App.DocumentObject | None = None,
 ) -> np.ndarray:
     """
     Read current joint positions from FreeCAD and return them in solver units:
-    - revolute  → radians  (FreeCAD stores degrees, convert with math.radians)
-    - prismatic → mm       (FreeCAD stores mm, pass through as-is)
+        - revolute  → radians
+        - prismatic → mm
 
-    This is the inverse of the conversion done in _apply_joint_positions, which
-    calls math.degrees() before writing revolute values back to the document.
-    Without this conversion, q0 arrives at the IK solver in degrees while the
-    solver expects radians — causing FK errors of ~57x and position drift > 100 mm.
+    Source priority:
+    1. robot_obj property via joint_variables (getattr) — always in degrees
+        for revolute joints. This is the most reliable source because it is
+        set directly by _write_joint_values / _apply_joint_positions.
+    2. j.Position fallback — unit is inconsistent across RobotCAD versions:
+        sometimes radians, sometimes degrees depending on recompute state.
+        Applying math.radians() to a value already in radians gives ~57x
+        underestimate of the joint angle, causing FK to report home (Z=618)
+        when the robot is actually at a different pose (e.g. Z=500).
     """
     q = np.empty(len(joint_objects))
-    for i, j in enumerate(joint_objects):
-        raw = float(j.Position)
-        q[i] = raw if j.Type == 'prismatic' else math.radians(raw)
+    if robot_obj is not None:
+        jvars = robot_obj.Proxy.joint_variables
+        for i, j in enumerate(joint_objects):
+            prop = jvars.get(j)
+            if prop is not None:
+                raw = getattr(robot_obj, prop)   # always degrees for revolute
+                q[i] = float(raw) if j.Type == 'prismatic' else math.radians(float(raw))
+            else:
+                raw = float(j.Position)
+                q[i] = raw if j.Type == 'prismatic' else math.radians(raw)
+    else:
+        for i, j in enumerate(joint_objects):
+            raw = float(j.Position)
+            q[i] = raw if j.Type == 'prismatic' else math.radians(raw)
     return q
 
 
@@ -497,14 +514,16 @@ class IKToolDialog(QtWidgets.QDialog):
             self._ee_marker = None
 
     def closeEvent(self, event) -> None:
-        """Remove the EE marker and observer when the dialog is closed."""
+        """Remove the EE marker, measurement points and observer when the dialog is closed."""
         fc.removeDocumentObserver(self._observer)
+        self._remove_measurement_points()
         self._remove_ee_marker()
         super().closeEvent(event)
 
     def reject(self) -> None:
-        """Handle Close button — remove observer and marker, then close."""
+        """Handle Close button — remove observer, measurement points and marker, then close."""
         fc.removeDocumentObserver(self._observer)
+        self._remove_measurement_points()
         self._remove_ee_marker()
         super().reject()
 
@@ -775,7 +794,63 @@ class IKToolDialog(QtWidgets.QDialog):
         self._pose_labels['Yaw'].setText(f'{yaw:.2f} °')
 
 
-    # ── Solve log ─────────────────────────────────────────────
+    def _ensure_measurement_points(self) -> None:
+        """
+        Create or update two reference points for visual measurement in FreeCAD:
+        - Origin_IK_Point (green):  always at (0,0,0) — document origin
+        - EF_IK_Point (red):        current EF position in world frame
+
+        These points allow accurate measurement with Part→Measure Linear
+        without depending on mesh face selection (which can introduce
+        centimeter-level errors if the click misses the center).
+        """
+        try:
+            import Part
+
+            # Origin point — created once, stays at (0,0,0)
+            orig = self._doc.getObject('Origin_IK_Point')
+            if orig is None:
+                orig = self._doc.addObject('Part::Feature', 'Origin_IK_Point')
+                orig.Shape = Part.Vertex(fc.Vector(0, 0, 0))
+                if hasattr(orig, 'ViewObject'):
+                    orig.ViewObject.PointSize  = 15
+                    orig.ViewObject.PointColor = (0.0, 1.0, 0.0)  # green
+
+            # EF point — updated after every Solve
+            ef_pt = self._doc.getObject('EF_IK_Point')
+            if ef_pt is None:
+                ef_pt = self._doc.addObject('Part::Feature', 'EF_IK_Point')
+                if hasattr(ef_pt, 'ViewObject'):
+                    ef_pt.ViewObject.PointSize  = 15
+                    ef_pt.ViewObject.PointColor = (1.0, 0.0, 0.0)  # red
+
+            # Position EF point at current EF world position
+            if self._robot is not None and self._joint_objs:
+                q = _read_joint_positions(self._joint_objs, self._robot_obj)
+                T_world = _get_robot_global_transform(self._robot_obj)
+                T_ee    = forward_kinematics(self._robot, q)
+                pos     = (T_world @ T_ee)[:3, 3]
+                ef_pt.Shape = Part.Vertex(fc.Vector(
+                    float(pos[0]), float(pos[1]), float(pos[2])
+                ))
+
+            self._doc.recompute()
+        except Exception:
+            pass
+
+    def _remove_measurement_points(self) -> None:
+        """Remove the measurement reference points from the document."""
+        for name in ('Origin_IK_Point', 'EF_IK_Point'):
+            obj = self._doc.getObject(name)
+            if obj is not None:
+                try:
+                    self._doc.removeObject(obj.Name)
+                except Exception:
+                    pass
+        try:
+            self._doc.recompute()
+        except Exception:
+            pass
 
     def _log_solve_result(
         self,
@@ -831,7 +906,7 @@ class IKToolDialog(QtWidgets.QDialog):
         if not self._joint_objs or self._robot is None:
             return
         try:
-            q_current  = _read_joint_positions(self._joint_objs)
+            q_current  = _read_joint_positions(self._joint_objs, self._robot_obj)
             T_world    = _get_robot_global_transform(self._robot_obj)
             T_world_ee = T_world @ forward_kinematics(self._robot, q_current)
         except Exception:
@@ -857,7 +932,7 @@ class IKToolDialog(QtWidgets.QDialog):
         if not self._joint_objs or self._robot is None:
             return
         try:
-            q_current  = _read_joint_positions(self._joint_objs)
+            q_current  = _read_joint_positions(self._joint_objs, self._robot_obj)
             T_world    = _get_robot_global_transform(self._robot_obj)
             T_world_ee = T_world @ forward_kinematics(self._robot, q_current)
         except Exception:
@@ -949,8 +1024,28 @@ class IKToolDialog(QtWidgets.QDialog):
         self._joint_objs = chain_joints
         n_joints = len(chain_joints)
 
+        # Adjust orientation weight and RPY spinbox state based on DOF count.
+        # With N joints: 3 DOF needed for position, remaining for orientation.
+        # - N >= 6: full orientation control, keep user's ori_weight
+        # - N == 5: 2 orientation DOF, reduce ori_weight and warn
+        # - N <= 4: orientation not independently controllable, disable RPY
+        max_ori_dof = max(0, n_joints - 3)
+        for axis in ('Roll', 'Pitch', 'Yaw'):
+            self._spins[axis].setEnabled(max_ori_dof > 0)
+        if n_joints >= 6:
+            pass  # keep user's setting
+        elif n_joints == 5:
+            self._spin_ori_weight.setValue(0.05)
+        else:
+            self._spin_ori_weight.setValue(0.0)
+
         try:
-            q0 = _read_joint_positions(self._joint_objs)
+            # Force a recompute so j.Position reflects the actual current
+            # joint values before we read them. Without this, j.Position
+            # may return stale values (e.g. home=0) when the dialog opens
+            # while the robot is already in a non-zero configuration.
+            self._doc.recompute()
+            q0 = _read_joint_positions(self._joint_objs, self._robot_obj)
         except Exception:
             self._lbl_status.setText(
                 tr("Solver error: Cannot access 'Position' of deleted object. "
@@ -964,6 +1059,7 @@ class IKToolDialog(QtWidgets.QDialog):
             if self._ee_marker is None:
                 self._create_ee_marker()
             self._refresh_ef_pose()
+            self._ensure_measurement_points()
         except Exception:
             pass
 
@@ -1023,7 +1119,7 @@ class IKToolDialog(QtWidgets.QDialog):
                 q0 = self.solved_joint_positions.copy()
             else:
                 try:
-                    q0 = _read_joint_positions(self._joint_objs)
+                    q0 = _read_joint_positions(self._joint_objs, self._robot_obj)
                 except Exception:
                     self._lbl_status.setText(
                         tr("Solver error: Cannot access 'Position' of deleted object. "
@@ -1173,9 +1269,7 @@ class IKToolDialog(QtWidgets.QDialog):
 
                 self._update_ee_marker(T_world_solved)
                 self._update_ef_pose_display(T_world_solved)
-
-                # Update only the pose display panel — do NOT sync spinboxes
-                # so the user's target values are preserved for the next Solve.
+                self._ensure_measurement_points()
 
                 pos_error = float(np.linalg.norm(target_world - achieved_world))
                 cos_angle = np.clip(

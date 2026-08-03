@@ -93,6 +93,14 @@ def inverse_kinematics(
     _escape_singularity() tries up to 20 random perturbations of ±1.5 rad
     and picks the configuration with highest manipulability before DLS.
 
+    Convergence
+    -----------
+    Declared when position error < tolerance. Orientation convergence is
+    NOT required for termination — some robots (e.g. ATLAS with coaxial
+    joints) have Rx=0 at home, making Roll permanently uncontrollable
+    from that configuration. Requiring orientation convergence would cause
+    the solver to never terminate in such cases.
+
     Joint wrapping (wrap_joints)
     ----------------------------
     Disabled by default. Wrapping revolute joints to [-π, π] causes
@@ -114,7 +122,7 @@ def inverse_kinematics(
     max_restarts       : random restarts on stall (default 5).
     verbose            : print convergence/restart info (default False).
     wrap_joints        : wrap revolute joints to [-π, π] after each step
-                         (default False — see note above).
+                        (default False — see note above).
 
     Returns
     -------
@@ -159,12 +167,17 @@ def inverse_kinematics(
             position_error      = target_position - current_position
             position_error_norm = float(np.linalg.norm(position_error))
 
+            # Convergence: position only.
+            # Orientation convergence is NOT required — some robots have
+            # structural singularities that make certain orientations
+            # unreachable regardless of joint configuration.
             if position_error_norm < tolerance:
                 if verbose:
                     print(f"Converged in {iteration} iters (restart {restart}), "
-                          f"position_error={position_error_norm:.4f} mm.")
+                        f"position_error={position_error_norm:.4f} mm.")
                 return joint_positions
 
+            # Build task error — orientation_error computed here, before use.
             if use_orientation:
                 orientation_error = rotation_error(current_rotation, target_rotation)
                 task_error = np.concatenate([
