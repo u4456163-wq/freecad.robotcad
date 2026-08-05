@@ -67,7 +67,7 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             os.path.join(pkg_ros_gz_sim, 'launch', 'gz_sim.launch.py'),
         ),
-        launch_arguments=launch_arguments if world_env else dict(gz_args='-r ' + gazebo_world + ' --verbose').items(),
+        launch_arguments=launch_arguments if world_env else dict(gz_args=['-r ', gazebo_world, ' --verbose']).items(),
     )
 
     # Spawn
