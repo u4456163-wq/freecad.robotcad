@@ -102,6 +102,7 @@ from ..kinematics.models import Robot, Joint, Link
 from ..kinematics.kinematics import forward_kinematics
 from ..kinematics.inverse_kinematics import inverse_kinematics
 from ..kinematics.jacobians import compute_jacobian
+from ..kinematics.ik_validation import run_validation
 
 # Default SLERP steps — overridable from the dialog spinbox.
 _N_STEPS_DEFAULT = 50
@@ -752,6 +753,14 @@ class IKToolDialog(QtWidgets.QDialog):
         lay_btns.addStretch()
         lay_btns.addWidget(btn_close)
         root_layout.addLayout(lay_btns)
+        self._btn_validate = QtWidgets.QPushButton(tr('Run Validation'))
+        self._btn_validate.setToolTip(tr(
+            'Run the full IK validation suite and print results\n'
+            'to the solve log and FreeCAD console'
+        ))
+        self._btn_validate.clicked.connect(self._on_run_validation)
+        lay_btns.addWidget(self._btn_validate)
+        
 
     # ── EF current pose display ────────────────────────────
         grp_ef_pose = QtWidgets.QGroupBox(tr('End Effector — current pose (world frame)'))
@@ -807,6 +816,8 @@ class IKToolDialog(QtWidgets.QDialog):
         try:
             import Part
 
+            AXIS_LENGTH = 20.0  # mm — length of the EF axis lines for visual reference
+
             # Origin point — created once, stays at (0,0,0)
             orig = self._doc.getObject('Origin_IK_Point')
             if orig is None:
@@ -816,23 +827,63 @@ class IKToolDialog(QtWidgets.QDialog):
                     orig.ViewObject.PointSize  = 15
                     orig.ViewObject.PointColor = (0.0, 1.0, 0.0)  # green
 
-            # EF point — updated after every Solve
-            ef_pt = self._doc.getObject('EF_IK_Point')
-            if ef_pt is None:
-                ef_pt = self._doc.addObject('Part::Feature', 'EF_IK_Point')
-                if hasattr(ef_pt, 'ViewObject'):
-                    ef_pt.ViewObject.PointSize  = 15
-                    ef_pt.ViewObject.PointColor = (1.0, 0.0, 0.0)  # red
+            if self._robot is None or not self._joint_objs:
+                self._doc.recompute()
+                return
+            
+            # ── Compute current EF pose ──────────────────────────────────────
+            q = _read_joint_positions(self._joint_objs, self._robot_obj)
+            T_world = _get_robot_global_transform(self._robot_obj)
+            T_ee = forward_kinematics(self._robot, q)
+            T_world_ee = T_world @ T_ee
+            pos = T_world_ee[:3,3]
+            R_ef = T_world_ee[:3,:3]
 
-            # Position EF point at current EF world position
-            if self._robot is not None and self._joint_objs:
-                q = _read_joint_positions(self._joint_objs, self._robot_obj)
-                T_world = _get_robot_global_transform(self._robot_obj)
-                T_ee    = forward_kinematics(self._robot, q)
-                pos     = (T_world @ T_ee)[:3, 3]
-                ef_pt.Shape = Part.Vertex(fc.Vector(
-                    float(pos[0]), float(pos[1]), float(pos[2])
-                ))
+            tip_x = pos + R_ef[:,0] * AXIS_LENGTH
+            tip_y = pos + R_ef[:,1] * AXIS_LENGTH
+            tip_z = pos + R_ef[:,2] * AXIS_LENGTH
+
+            # ── EF position point (red) ──────────────────────────────────────
+            ef_point = self._doc.getObject('EF_IK_Point')
+            if ef_point is None:
+                ef_point = self._doc.addObject('Part::Feature', 'EF_IK_Point')
+                if hasattr(ef_point, 'ViewObject'):
+                    ef_point.ViewObject.PointSize  = 15
+                    ef_point.ViewObject.PointColor = (1.0, 0.0, 0.0)  # red
+            ef_point.Shape = Part.Vertex(fc.Vector(float(pos[0]), float(pos[1]), float(pos[2])))
+
+            # ── Axis edges (líneas) ─────────────────────────────────────────
+            _axis_cfg = [
+                ('EF_IK_X_Edge', pos, tip_x, (1.0, 0.0, 0.0)),  # red
+                ('EF_IK_Y_Edge', pos, tip_y, (0.0, 1.0, 0.0)),  # green
+                ('EF_IK_Z_Edge', pos, tip_z, (0.0, 0.4, 1.0)),  # blue
+            ]
+            for name, p0, p1, color in _axis_cfg:
+                obj = self._doc.getObject(name)
+                if obj is None:
+                    obj =self._doc.addObject('Part::Feature', name)
+                    if hasattr(obj, 'ViewObject'):
+                        obj.ViewObject.LineWidth = 4.0
+                        obj.ViewObject.LineColor = color
+                obj.Shape = Part.makeLine(
+                    fc.Vector(float(p0[0]), float(p0[1]), float(p0[2])),
+                    fc.Vector(float(p1[0]), float(p1[1]), float(p1[2]))     
+                )
+
+            # ── Axis tip points (medibles con Measure Linear) ────────────────
+            _tip_cfg = [
+                ('EF_IK_X_Point', tip_x, (1.0, 0.2, 0.2)),
+                ('EF_IK_Y_Point', tip_y, (0.2,1.0,0.2)),
+                ('EF_IK_Z_Point', tip_z, (0.2,0.6,1.0)),
+            ]
+            for name, tip, color in _tip_cfg:
+                obj = self._doc.getObject(name)
+                if obj is None:
+                    obj = self._doc.addObject('Part::Feature', name)
+                    if hasattr(obj, 'ViewObject'):
+                        obj.ViewObject.PointSize = 10
+                        obj.ViewObject.PointColor = color
+                obj.Shape = Part.Vertex(fc.Vector(float(tip[0]), float(tip[1]), float(tip[2])))
 
             self._doc.recompute()
         except Exception:
@@ -840,7 +891,12 @@ class IKToolDialog(QtWidgets.QDialog):
 
     def _remove_measurement_points(self) -> None:
         """Remove the measurement reference points from the document."""
-        for name in ('Origin_IK_Point', 'EF_IK_Point'):
+        names = [
+            'Origin_IK_Point', 'EF_IK_Point',
+        'EF_X_IK_Point', 'EF_Y_IK_Point', 'EF_Z_IK_Point',
+        'EF_X_IK_Edge',  'EF_Y_IK_Edge',  'EF_Z_IK_Edge',
+        ]
+        for name in names:
             obj = self._doc.getObject(name)
             if obj is not None:
                 try:
@@ -1339,6 +1395,36 @@ class IKToolDialog(QtWidgets.QDialog):
         self._lbl_status.setText(tr('↩ Original joint positions restored.'))
         self._refresh_ef_pose()
 
+    def _on_run_validation(self) -> None:
+        """
+        Run the full IK validation suite and print results to the solve log
+        and FreeCAD console.
+        """
+        if self._robot is None or not self._joint_objs:
+            self._lbl_status.setText(tr('Load a chain first before running validation.'))
+            return
+        try:
+            target_pose = (
+                self._spins['X'].value(),
+                self._spins['Y'].value(),
+                self._spins['Z'].value(),
+                self._spins['Roll'].value(),
+                self._spins['Pitch'].value(),
+                self._spins['Yaw'].value(),
+            )
+            self._log.appendPlainText('\n Running IK Validation Suite')
+            results = run_validation(
+                robot_obj = self._robot_obj,
+                ee_label = self._combo_ee.currentText(),
+                target_pose = target_pose
+            )
+            passed = sum(1 for r in results if r['Passed'])
+            self._log.appendPlainText(
+                f'Validation complete: {passed}/{len(results)} PASS'
+            )
+            
+        except Exception as exc:
+            self._lbl_status.setText(f'Validation error: {exc}')
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FreeCAD Gui Command

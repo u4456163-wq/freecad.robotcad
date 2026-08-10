@@ -75,6 +75,7 @@ def inverse_kinematics(
     weight_orientation: float = 0.05,
     max_iterations: int = 1000,
     tolerance: float = 1e-3,
+    ori_tolerance_deg: float = 1.0,
     max_restarts: int = 5,
     verbose: bool = False,
     wrap_joints: bool = False,
@@ -84,22 +85,32 @@ def inverse_kinematics(
 
     Step-size clamping
     ------------------
-    Uses position error norm only [mm] — not the mixed pos+ori norm.
+    Uses a *drive norm* that blends position and orientation errors so the
+    solver keeps taking meaningful steps even after position has converged:
 
-        max_step = clip(position_error_norm * 0.05, 0.001, 0.3)
+        drive_norm = max(position_error_norm,
+                         ori_error_norm * ORI_DRIVE_SCALE)   # when use_orientation
+        max_step   = clip(drive_norm * 0.05, 0.001, 0.3)
+
+    This prevents the solver from clamping its step to 0.001 rad/mm when
+    pos_error ≈ 0 but ori_error is still large (the classic ~100 ° stall).
+
+    Convergence
+    -----------
+    Position-only mode  : converged when pos_error < tolerance.
+    With orientation    : converged when BOTH
+                            pos_error  < tolerance
+                            ori_error  < ori_tolerance_deg  (default 1 °)
+
+    The orientation threshold is intentionally loose because some robots
+    (e.g. ATLAS with coaxial joints) cannot control all three rotation axes
+    from every configuration. Tighten ori_tolerance_deg if you need stricter
+    orientation accuracy and the robot has enough DOF.
 
     Singularity handling
     --------------------
     _escape_singularity() tries up to 20 random perturbations of ±1.5 rad
     and picks the configuration with highest manipulability before DLS.
-
-    Convergence
-    -----------
-    Declared when position error < tolerance. Orientation convergence is
-    NOT required for termination — some robots (e.g. ATLAS with coaxial
-    joints) have Rx=0 at home, making Roll permanently uncontrollable
-    from that configuration. Requiring orientation convergence would cause
-    the solver to never terminate in such cases.
 
     Joint wrapping (wrap_joints)
     ----------------------------
@@ -119,6 +130,8 @@ def inverse_kinematics(
     weight_orientation : orientation error weight (default 0.05).
     max_iterations     : DLS iterations per restart (default 1000).
     tolerance          : position convergence threshold [mm] (default 1e-3).
+    ori_tolerance_deg  : orientation convergence threshold [deg] (default 1.0).
+                        Only used when target_rotation is not None.
     max_restarts       : random restarts on stall (default 5).
     verbose            : print convergence/restart info (default False).
     wrap_joints        : wrap revolute joints to [-π, π] after each step
@@ -128,7 +141,13 @@ def inverse_kinematics(
     -------
     (N,) joint positions if converged, None otherwise.
     """
+    # Scale factor: how much ori_error_norm (rad) contributes to drive_norm (mm).
+    # Chosen so that 0.1 rad (~6°) of orientation error produces the same drive
+    # as ~10 mm of position error — keeps step sizes reasonable in both regimes.
+    _ORI_DRIVE_SCALE = 100.0
+
     use_orientation = target_rotation is not None
+    ori_tolerance_rad = np.deg2rad(ori_tolerance_deg)
 
     revolute_mask = np.array([
         j.joint_type in ("revolute", "continuous")
@@ -167,19 +186,33 @@ def inverse_kinematics(
             position_error      = target_position - current_position
             position_error_norm = float(np.linalg.norm(position_error))
 
-            # Convergence: position only.
-            # Orientation convergence is NOT required — some robots have
-            # structural singularities that make certain orientations
-            # unreachable regardless of joint configuration.
-            if position_error_norm < tolerance:
+            # ── Orientation error (always computed when use_orientation) ──────
+            if use_orientation:
+                orientation_error     = rotation_error(current_rotation, target_rotation)
+                ori_error_norm        = float(np.linalg.norm(orientation_error))
+            else:
+                orientation_error = None
+                ori_error_norm    = 0.0
+
+            # ── Convergence check ─────────────────────────────────────────────
+            # Position-only: exit as soon as pos_error < tolerance.
+            # With orientation: require BOTH pos and ori to be within threshold.
+            # This prevents the solver from returning early with pos_error ≈ 0
+            # but ori_error ≈ 100 °, which was the original stall bug.
+            pos_converged = position_error_norm < tolerance
+            ori_converged = (not use_orientation) or (ori_error_norm < ori_tolerance_rad)
+
+            if pos_converged and ori_converged:
                 if verbose:
-                    print(f"Converged in {iteration} iters (restart {restart}), "
-                        f"position_error={position_error_norm:.4f} mm.")
+                    print(
+                        f"Converged in {iteration} iters (restart {restart}), "
+                        f"pos_err={position_error_norm:.4f} mm, "
+                        f"ori_err={np.degrees(ori_error_norm):.4f} deg."
+                    )
                 return joint_positions
 
-            # Build task error — orientation_error computed here, before use.
+            # ── Build task error ──────────────────────────────────────────────
             if use_orientation:
-                orientation_error = rotation_error(current_rotation, target_rotation)
                 task_error = np.concatenate([
                     weight_position    * position_error,
                     weight_orientation * orientation_error,
@@ -187,6 +220,7 @@ def inverse_kinematics(
             else:
                 task_error = weight_position * position_error
 
+            # ── Stall detection ───────────────────────────────────────────────
             position_error_change   = abs(previous_position_error - position_error_norm)
             stall_count = stall_count + 1 if position_error_change < 1e-10 else 0
             previous_position_error = position_error_norm
@@ -195,6 +229,7 @@ def inverse_kinematics(
                     print(f"Stalled at iter {iteration}, pos_err={position_error_norm:.4f} mm.")
                 break
 
+            # ── DLS step ──────────────────────────────────────────────────────
             full_jacobian = compute_jacobian(robot, joint_positions)
             J = full_jacobian if use_orientation else full_jacobian[:3, :]
             U, S, Vh = np.linalg.svd(J, full_matrices=False)
@@ -204,8 +239,21 @@ def inverse_kinematics(
             damped_singular_values = S / (S ** 2 + damping_lambda ** 2)
             joint_delta            = Vh.T @ (damped_singular_values * (U.T @ task_error))
 
+            # ── Step-size clamping ────────────────────────────────────────────
+            # Bug fix: when pos_error ≈ 0 but ori_error is large, the old code
+            # clamped max_step to 0.001 (its floor), making orientation corrections
+            # impossibly slow (effectively stalling at ~100 ° for hundreds of iters).
+            #
+            # Fix: use a *drive_norm* that falls back to the orientation error
+            # (scaled to mm-equivalent units) when position has already converged.
+            # This keeps the step budget large enough to rotate the EF.
+            if use_orientation:
+                drive_norm = max(position_error_norm, ori_error_norm * _ORI_DRIVE_SCALE)
+            else:
+                drive_norm = position_error_norm
+
             step_norm = np.linalg.norm(joint_delta)
-            max_step  = np.clip(position_error_norm * 0.05, 0.001, 0.3)
+            max_step  = np.clip(drive_norm * 0.05, 0.001, 0.3)
             if step_norm > max_step:
                 joint_delta = joint_delta * (max_step / step_norm)
 

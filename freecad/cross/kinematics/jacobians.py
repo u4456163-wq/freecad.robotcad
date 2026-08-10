@@ -25,18 +25,19 @@ def compute_jacobian(robot: Robot, joint_positions: np.ndarray) -> np.ndarray:
     end_effector_position = all_transforms[-1][:3, 3]
 
     current_column = 0
+
     for i, joint in enumerate(robot.joints):
         if joint.joint_type == "fixed":
             continue
 
-        # Frame of the parent link (before the URDF offset of this joint)
-        T_parent = all_transforms[i]  # all_transforms[0] is base, [1] is after joint 0, etc.
-        # Fixed URDF transform for this joint
-        T_urdf = joint_to_matrix(joint)
-        # Frame of the joint BEFORE the motion (includes fixed offset, excludes q[i])
-        T_frame_articulation = T_parent @ T_urdf
+        T_parent = all_transforms[i]
+        T_urdf   = joint_to_matrix(joint)
+
+        T_frame_articulation    = T_parent @ T_urdf
+
         position_frame_articulation = T_frame_articulation[:3, 3]
         rotation_frame_articulation = T_frame_articulation[:3, :3]
+
         axis_joint_local = np.array(joint.axis) / np.linalg.norm(joint.axis)
         axis_z_transformed = rotation_frame_articulation @ axis_joint_local
 
@@ -49,8 +50,8 @@ def compute_jacobian(robot: Robot, joint_positions: np.ndarray) -> np.ndarray:
             jacobian_matrix[3:, current_column] = np.zeros(3)
 
         current_column += 1
-
     return jacobian_matrix
+
 
 def validate_jacobian_numerically(robot: Robot, joint_positions: np.ndarray, epsilon: float = 1e-6) -> tuple[np.ndarray, np.ndarray]:
     """
