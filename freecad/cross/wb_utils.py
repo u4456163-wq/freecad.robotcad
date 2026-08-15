@@ -286,7 +286,7 @@ def get_child_joints(link_or_joint: DO) -> list[CrossJoint] | bool:
     if is_joint(link_or_joint):
         link_name = link_or_joint.Child
     elif is_link(link_or_joint):
-        link_name = link_or_joint.Name
+        link_name = ros_name(link_or_joint)
     else:
         return False
 
