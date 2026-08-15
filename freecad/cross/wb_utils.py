@@ -928,15 +928,15 @@ def get_placement_of_orienteer(orienteer, delete_created_objects:bool = True, lc
     elif is_placement(orienteer_object):
         placement = orienteer_object
     else:
-        lcs, body_lcs_wrapper, lcs_placement = make_lcs_at_link_body(orienteer, False, lcs_concentric_reversed, True)
+        lcs, body_lcs_wrapper, lcs_placement, doc = make_lcs_at_link_body(orienteer, False, lcs_concentric_reversed, True)
         fcgui.Selection.addSelection(orienteer.Document.Name, orienteer.Object.Name, body_lcs_wrapper.Name + '.' + lcs.Name + '.X')
         placement = get_placement(lcs)
         
         if hasattr(fcgui.Selection, 'removeSelection'):
             fcgui.Selection.removeSelection(orienteer.Document.Name, orienteer.Object.Name, body_lcs_wrapper.Name + '.' + lcs.Name + '.X')
         if delete_created_objects:
-            fc.ActiveDocument.removeObject(body_lcs_wrapper.Name)
-            fc.ActiveDocument.removeObject(lcs.Name)
+            doc.removeObject(body_lcs_wrapper.Name)
+            doc.removeObject(lcs.Name)
 
     return placement
 
@@ -1026,11 +1026,16 @@ def make_lcs_at_link_body(
         # works inside SetPlacement tools
         if is_fc_link(orienteer.Object) and orienteer.Object.Name.startswith('real_'):
             dynamic_link_of_robot_link = orienteer.Object
-            if is_part(dynamic_link_of_robot_link.LinkedObject):
-                original_obj_wrapper = dynamic_link_of_robot_link.LinkedObject
+            linkedObject = dynamic_link_of_robot_link.getLinkedObject(True)
+            if is_part(linkedObject):
+                original_obj_wrapper = linkedObject
             if is_selection_object(orienteer):
-                original_obj = get_selected_shape_object(orienteer)
-                original_obj_link_candidate =  get_selected_shape_object(orienteer, return_linked_obj = False)
+                doc = dynamic_link_of_robot_link.Document
+                if dynamic_link_of_robot_link.Document.Name != linkedObject.Document.Name:
+                    #link to another doc case
+                    doc = linkedObject.Document
+                original_obj = get_selected_shape_object(orienteer, doc = doc)
+                original_obj_link_candidate =  get_selected_shape_object(orienteer, return_linked_obj = False, doc = doc)
                 if is_fc_link(original_obj_link_candidate):
                     # placement works only for 1 level deep link
                     # for more deeper links need calc cumulative placement
@@ -1072,13 +1077,15 @@ def make_lcs_at_link_body(
     except (AttributeError, IndexError):
         pass
 
-    body_lcs_wrapper = fc.ActiveDocument.addObject("PartDesign::Body", "Body")
+    if not doc:
+        doc = fc.ActiveDocument
+    body_lcs_wrapper = doc.addObject("PartDesign::Body", "Body")
 
     body_lcs_wrapper.Label = wb_constants.lcs_wrapper_prefix + orienteer.Object.Label + '(' + orienteer.Object.Name + ') ' + sub_element_name + ' '
 
     original_obj_wrapper.addObject(body_lcs_wrapper)
 
-    lcs = fc.ActiveDocument.addObject( 'PartDesign::CoordinateSystem', 'LCS')
+    lcs = doc.addObject( 'PartDesign::CoordinateSystem', 'LCS')
     body_lcs_wrapper.addObject(lcs)
 
     setattr(lcs, lcs_attachmentsupport_name(), [(original_obj, sub_element_name)])   # The X axis.
@@ -1116,12 +1123,14 @@ def make_lcs_at_link_body(
     # placement = dynamic_link_of_robot_link.Placement * lcs.Placement
 
     if delete_created_objects:
-        fc.ActiveDocument.removeObject(body_lcs_wrapper.Name)
-        fc.ActiveDocument.removeObject(lcs.Name)
+        doc.removeObject(body_lcs_wrapper.Name)
+        doc.removeObject(lcs.Name)
 
-    fc.activeDocument().recompute()
+    doc.recompute()
+    if doc.Name != fc.activeDocument().Name:
+        fc.activeDocument().recompute()
 
-    return lcs, body_lcs_wrapper, lcs.Placement
+    return lcs, body_lcs_wrapper, lcs.Placement, doc
 
 
 def rotate_placement(
