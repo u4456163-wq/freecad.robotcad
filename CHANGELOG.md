@@ -1,3 +1,19 @@
+# RobotCAD — Release v12.6.5
+
+**Date:** 2026-08-16
+
+## Fixes
+
+- Fixed the URDF export for meshes retrieved from an **external document via a link**: the document name is now used as a prefix for the mesh filename, fixing a bug when meshes with the same name came from different external documents.
+
+---
+
+### Commits
+
+- `ce2dd25` — add document prefix for meshes retrieved from an external document via a link
+
+---
+
 # RobotCAD — Release v12.6.4
 
 **Date:** 2026-08-15
