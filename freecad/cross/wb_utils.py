@@ -915,9 +915,8 @@ def get_placement_of_orienteer(orienteer, delete_created_objects:bool = True, lc
     orienteer_object = orienteer
     if is_selection_object(orienteer):
         orienteer_object = orienteer.Object
-        parsed_path = parse_freecad_path(orienteer.SubElementNames, orienteer.Document)
+        parsed_path = parse_freecad_path(orienteer.SubElementNames, orienteer.Object.getLinkedObject(True).Document)
         obj = parsed_path['object']
-
     if is_lcs(orienteer):
         placement = get_placement(orienteer)
     elif is_selection_object(orienteer) and parsed_path['datum_type'] in ['LCS', 'Point']:
