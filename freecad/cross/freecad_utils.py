@@ -45,6 +45,7 @@ DOList = Iterable[DO]
 
 DATUM_TYPES = {
     'PartDesign::CoordinateSystem': 'LCS',
+    'Part::LocalCoordinateSystem': 'LCS',
     'Sketcher::SketchObject': 'Sketch',
     'PartDesign::Plane': 'Plane',
     'PartDesign::Line': 'Axis',
