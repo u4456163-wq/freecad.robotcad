@@ -172,7 +172,7 @@ def createBoundObjects(createBoundFunc = createBoundBox):
                 obj_to_subobj_middle_wrap_diff = fc.Placement()
 
             bound = createBound(collision_source_obj)
-            doc.removeObject(collision_source_obj.Name)
+            collision_source_obj.Document.removeObject(collision_source_obj.Name)
             
             if bound:
                 boundWrapper, bound = make_bound_obj_wrapper(
@@ -186,6 +186,7 @@ def createBoundObjects(createBoundFunc = createBoundBox):
                 warn('Can not create collision for object - '+obj.Label+'('+obj.Name+'). Maybe it does not contain any body.')
 
         doc.commitTransaction()
+        doc.recompute()
     else:
         fc.Console.PrintMessage("Select an object !"+"\n")
 
