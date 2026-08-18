@@ -34,6 +34,7 @@ from .freecad_utils import set_param
 from .freecad_utils import warn
 from .freecad_utils import lcs_attachmentsupport_name
 from .freecadgui_utils import get_placement, get_progress_bar, gui_process_events
+from .ros.utils import _add_robotcad_venv_to_sys_path
 from .ros.utils import get_ros_workspace_from_file
 from .ros.utils import without_ros_workspace
 from .utils import attr_equals, calc_md5
@@ -55,16 +56,10 @@ from .sensors.sensor import Sensor as CrossSensor  # A Cross::Sensor, i.e. a Doc
 DO = fc.DocumentObject
 CrossBasicElement = Union[CrossJoint, CrossLink]
 CrossObject = Union[CrossJoint, CrossLink, CrossRobot, CrossXacroObject, CrossWorkcell, CrossController, CrossSensor]
+CrossVacuumGripper = DO  # A Cross::VacuumGripper, i.e. a DocumentObject with Proxy "VacuumGripperProxy".
 DOList = List[DO]
 
-# /home/use/.local/share/FreeCAD/Mod/ # this used when RobotCAD installed like Addon Manager do
-MOD_PATH_IN_USER_SHARE_DIR = Path(fc.getUserAppDataDir()) / 'Mod/freecad.robotcad'
-# near basic modules like Part, BIM # this used when RobotCAD packed with root modules for install via 1 archive
-MOD_PATH_IN_ROOT_MODULES_DIR = Path(fc.getResourceDir()) / 'Mod/freecad.robotcad' 
-if os.path.exists(MOD_PATH_IN_USER_SHARE_DIR):
-    MOD_PATH = MOD_PATH_IN_USER_SHARE_DIR
-else:
-    MOD_PATH = MOD_PATH_IN_ROOT_MODULES_DIR
+from .wb_constants import MOD_PATH
 
 RESOURCES_PATH = MOD_PATH / 'resources'
 UI_PATH = RESOURCES_PATH / 'ui'
@@ -182,6 +177,11 @@ def is_sensor_joint(obj: DO) -> bool:
     return has_cross_type(obj, 'Cross::SensorJoint')
 
 
+def is_vacuum_gripper(obj: DO) -> bool:
+    """Return True if the object is a Cross::VacuumGripper."""
+    return has_cross_type(obj, 'Cross::VacuumGripper')
+
+
 def is_planning_scene(obj: DO) -> bool:
     """Return True if the object is a Cross::PlanningScene."""
     return has_cross_type(obj, 'Cross::PlanningScene')
@@ -256,6 +256,11 @@ def is_workcell_selected() -> bool:
     return is_selected_from_lambda(is_workcell)
 
 
+def is_vacuum_gripper_selected() -> bool:
+    """Return True if the first selected object is a Cross::VacuumGripper."""
+    return is_selected_from_lambda(is_vacuum_gripper)
+
+
 def is_planning_scene_selected() -> bool:
     """Return True if the first selected object is a Cross::PlanningScene."""
     return is_selected_from_lambda(is_planning_scene)
@@ -281,7 +286,7 @@ def get_child_joints(link_or_joint: DO) -> list[CrossJoint] | bool:
     if is_joint(link_or_joint):
         link_name = link_or_joint.Child
     elif is_link(link_or_joint):
-        link_name = link_or_joint.Name
+        link_name = ros_name(link_or_joint)
     else:
         return False
 
@@ -303,6 +308,11 @@ def get_link_sensors(objs: DOList) -> list[CrossSensor]:
 def get_joint_sensors(objs: DOList) -> list[CrossSensor]:
     """Return only the objects that are Cross::SensorJoint instances."""
     return [o for o in objs if is_sensor_joint(o)]
+
+
+def get_vacuum_grippers(objs: DOList) -> list[CrossVacuumGripper]:
+    """Return only the objects that are Cross::VacuumGripper instances."""
+    return [o for o in objs if is_vacuum_gripper(o)]
 
 
 def get_controllers(objs: DOList) -> list[CrossController]:
@@ -371,11 +381,14 @@ def get_chain(link: CrossLink) -> list[CrossBasicElement]:
         # A root link.
         return [link]
     if not ref_joint.Parent:
-        warn(f'Joint `{ros_name(ref_joint)}` has no parent', False)
+        # warn(f'Joint `{ros_name(ref_joint)}` has no parent', False) # too many notifies when changes Parent/Child
         # Return only ref_joint to indicate an error.
         return [ref_joint]
     robot = ref_joint.Proxy.get_robot()
     parent_link = robot.Proxy.get_link(ref_joint.Parent)
+    if parent_link is None:
+        # Return only ref_joint to indicate an error.
+        return [ref_joint]
     subchain = get_chain(parent_link)
     if subchain and is_joint(subchain[0]):
         # Propagate the error of missing joint.Parent.
@@ -855,7 +868,7 @@ def set_placement_by_orienteer(doc: DO, link_or_joint: DO,
             joint.Origin = old_placement_diff.inverse() * joint.Origin
 
         if is_joint(link_or_joint):
-            child_link = doc.getObject(link_or_joint.Child)
+            child_link = link_or_joint.Proxy._robot.Proxy.get_link(link_or_joint.Child)
             child_link.MountedPlacement  = old_placement_diff.inverse() * child_link.MountedPlacement
 
     doc.recompute()
@@ -902,9 +915,8 @@ def get_placement_of_orienteer(orienteer, delete_created_objects:bool = True, lc
     orienteer_object = orienteer
     if is_selection_object(orienteer):
         orienteer_object = orienteer.Object
-        parsed_path = parse_freecad_path(orienteer.SubElementNames, orienteer.Document)
+        parsed_path = parse_freecad_path(orienteer.SubElementNames, orienteer.Object.getLinkedObject(True).Document)
         obj = parsed_path['object']
-
     if is_lcs(orienteer):
         placement = get_placement(orienteer)
     elif is_selection_object(orienteer) and parsed_path['datum_type'] in ['LCS', 'Point']:
@@ -915,15 +927,15 @@ def get_placement_of_orienteer(orienteer, delete_created_objects:bool = True, lc
     elif is_placement(orienteer_object):
         placement = orienteer_object
     else:
-        lcs, body_lcs_wrapper, lcs_placement = make_lcs_at_link_body(orienteer, False, lcs_concentric_reversed, True)
+        lcs, body_lcs_wrapper, lcs_placement, doc = make_lcs_at_link_body(orienteer, False, lcs_concentric_reversed, True)
         fcgui.Selection.addSelection(orienteer.Document.Name, orienteer.Object.Name, body_lcs_wrapper.Name + '.' + lcs.Name + '.X')
         placement = get_placement(lcs)
         
         if hasattr(fcgui.Selection, 'removeSelection'):
             fcgui.Selection.removeSelection(orienteer.Document.Name, orienteer.Object.Name, body_lcs_wrapper.Name + '.' + lcs.Name + '.X')
         if delete_created_objects:
-            fc.ActiveDocument.removeObject(body_lcs_wrapper.Name)
-            fc.ActiveDocument.removeObject(lcs.Name)
+            doc.removeObject(body_lcs_wrapper.Name)
+            doc.removeObject(lcs.Name)
 
     return placement
 
@@ -1013,11 +1025,16 @@ def make_lcs_at_link_body(
         # works inside SetPlacement tools
         if is_fc_link(orienteer.Object) and orienteer.Object.Name.startswith('real_'):
             dynamic_link_of_robot_link = orienteer.Object
-            if is_part(dynamic_link_of_robot_link.LinkedObject):
-                original_obj_wrapper = dynamic_link_of_robot_link.LinkedObject
+            linkedObject = dynamic_link_of_robot_link.getLinkedObject(True)
+            if is_part(linkedObject):
+                original_obj_wrapper = linkedObject
             if is_selection_object(orienteer):
-                original_obj = get_selected_shape_object(orienteer)
-                original_obj_link_candidate =  get_selected_shape_object(orienteer, return_linked_obj = False)
+                doc = dynamic_link_of_robot_link.Document
+                if dynamic_link_of_robot_link.Document.Name != linkedObject.Document.Name:
+                    #link to another doc case
+                    doc = linkedObject.Document
+                original_obj = get_selected_shape_object(orienteer, doc = doc)
+                original_obj_link_candidate =  get_selected_shape_object(orienteer, return_linked_obj = False, doc = doc)
                 if is_fc_link(original_obj_link_candidate):
                     # placement works only for 1 level deep link
                     # for more deeper links need calc cumulative placement
@@ -1059,13 +1076,15 @@ def make_lcs_at_link_body(
     except (AttributeError, IndexError):
         pass
 
-    body_lcs_wrapper = fc.ActiveDocument.addObject("PartDesign::Body", "Body")
+    if not doc:
+        doc = fc.ActiveDocument
+    body_lcs_wrapper = doc.addObject("PartDesign::Body", "Body")
 
     body_lcs_wrapper.Label = wb_constants.lcs_wrapper_prefix + orienteer.Object.Label + '(' + orienteer.Object.Name + ') ' + sub_element_name + ' '
 
     original_obj_wrapper.addObject(body_lcs_wrapper)
 
-    lcs = fc.ActiveDocument.addObject( 'PartDesign::CoordinateSystem', 'LCS')
+    lcs = doc.addObject( 'PartDesign::CoordinateSystem', 'LCS')
     body_lcs_wrapper.addObject(lcs)
 
     setattr(lcs, lcs_attachmentsupport_name(), [(original_obj, sub_element_name)])   # The X axis.
@@ -1103,12 +1122,14 @@ def make_lcs_at_link_body(
     # placement = dynamic_link_of_robot_link.Placement * lcs.Placement
 
     if delete_created_objects:
-        fc.ActiveDocument.removeObject(body_lcs_wrapper.Name)
-        fc.ActiveDocument.removeObject(lcs.Name)
+        doc.removeObject(body_lcs_wrapper.Name)
+        doc.removeObject(lcs.Name)
 
-    fc.activeDocument().recompute()
+    doc.recompute()
+    if doc.Name != fc.activeDocument().Name:
+        fc.activeDocument().recompute()
 
-    return lcs, body_lcs_wrapper, lcs.Placement
+    return lcs, body_lcs_wrapper, lcs.Placement, doc
 
 
 def rotate_placement(
@@ -1277,41 +1298,128 @@ def git_init_submodules(
 
     def git_deinit_submodules():
         message('Deinit git submodules.')
-        p = subprocess.run(
+        progressBar.setValue(5)
+        gui_process_events()
+        p = subprocess.Popen(
             ["git submodule deinit -f ."],
             shell=True,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             cwd=MOD_PATH,
-            check=True,
+            text=True,
         )
-        print('process:', p)
+        for line in p.stdout:
+            print(line, end='')
+        p.wait()
 
 
     def git_update_submodules(update_from_remote_branch_param: str = ''):
         message('Update git submodules.')
-        p = subprocess.run(
+        if not (MOD_PATH / '.git').exists():
+            progressBar.setValue(10)
+            gui_process_events()
+            message('Git directory not found. Cloning repository to get .git.')
+            import tempfile
+            import shutil
+            repo_url = 'https://github.com/drfenixion/freecad.robotcad'
+            tmp_parent = Path(tempfile.gettempdir()) / 'robotcad_git_clone'
+            tmp_parent.mkdir(parents=True, exist_ok=True)
+            clone_dest = tmp_parent / 'freecad.robotcad'
+            if clone_dest.exists():
+                shutil.rmtree(clone_dest)
+            p = subprocess.Popen(
+                ["git clone --depth 1 " + repo_url + ' ' + str(clone_dest)],
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                cwd=str(tmp_parent),
+                text=True,
+            )
+            for line in p.stdout:
+                print(line, end='')
+            p.wait()
+            shutil.copytree(
+                clone_dest / '.git',
+                MOD_PATH / '.git',
+                dirs_exist_ok=True,
+            )
+            shutil.rmtree(tmp_parent)
+            message('.git directory copied from cloned repository.')
+        progressBar.setValue(25)
+        gui_process_events()
+
+        message('Updating git submodules...')
+        p = subprocess.Popen(
             ["git submodule update --init " + update_from_remote_branch_param],
             shell=True,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             cwd=MOD_PATH,
-            check=True,
+            text=True,
         )
-        print('process:', p)
+        for line in p.stdout:
+            print(line, end='')
+        p.wait()
+        progressBar.setValue(45)
+        gui_process_events()
 
-        for pip_deps_installmodule_path in pip_deps_install_submodule_paths:
+        total_pip = len(pip_deps_install_submodule_paths)
+        for i, pip_deps_installmodule_path in enumerate(pip_deps_install_submodule_paths):
             pip_install_dependencies_of_module(pip_deps_installmodule_path)
+            if total_pip > 0:
+                pip_progress = 45 + int((i + 1) / total_pip * 45)
+                progressBar.setValue(pip_progress)
+                gui_process_events()
 
 
     def pip_install_dependencies_of_module(target_module_path: str):
         message('Pip install dependencies of module.')
-        p = subprocess.run(
-            ["pip install ."],
-            shell=True,
-            capture_output=True,
+        import sys as fc_sys
+        python_exe = fc_sys.executable
+        if not os.path.basename(python_exe).startswith('python'):
+            python_exe = os.path.join(fc_sys.base_prefix, 'bin', 'python')
+        # Shared virtual environment at the root of freecad.robotcad.
+        venv_path = MOD_PATH / '.venv'
+        venv_bin = str(venv_path / 'bin')
+        venv_python = str(venv_path / 'bin' / 'python')
+        if not os.path.exists(venv_python):
+            message('Creating shared virtual environment at MOD_PATH/.venv.')
+            try:
+                p = subprocess.run(
+                    [python_exe, '-m', 'venv', str(venv_path)],
+                    shell=False,
+                    capture_output=True,
+                    cwd=MOD_PATH,
+                    check=False,
+                )
+                if p.returncode != 0:
+                    raise subprocess.CalledProcessError(p.returncode, p.args)
+                print(p.stdout.decode() if p.stdout else '')
+                print(p.stderr.decode() if p.stderr else '')
+            except subprocess.CalledProcessError:
+                message('virtualenv not available, creating minimal venv manually.')
+                os.makedirs(venv_bin, exist_ok=True)
+                os.makedirs(str(venv_path / 'lib' / 'python'), exist_ok=True)
+                try:
+                    os.symlink(python_exe, venv_python)
+                except FileExistsError:
+                    pass
+
+        # Always run pip install --target to install/update packages,
+        # regardless of whether the venv already existed or was just created.
+        message(f'Running pip install in {target_module_path}...')
+        p = subprocess.Popen(
+            [python_exe, '-m', 'pip', 'install', '--target', str(venv_path / 'lib' / 'python' / 'site-packages'), '.'],
+            shell=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             cwd=target_module_path,
-            check=True,
+            text=True,
         )
-        print('process:', p)
+        for line in p.stdout:
+            print(line, end='')
+        p.wait()
+        _add_robotcad_venv_to_sys_path()
 
 
     progressBar = get_progress_bar(
@@ -1321,7 +1429,7 @@ def git_init_submodules(
         show_percents = False,
     )
     progressBar.show()
-    progressBar.setValue(0)
+    progressBar.setValue(10)
     gui_process_events()
 
 

@@ -45,6 +45,7 @@ DOList = Iterable[DO]
 
 DATUM_TYPES = {
     'PartDesign::CoordinateSystem': 'LCS',
+    'Part::LocalCoordinateSystem': 'LCS',
     'Sketcher::SketchObject': 'Sketch',
     'PartDesign::Plane': 'Plane',
     'PartDesign::Line': 'Axis',
@@ -767,7 +768,7 @@ def parse_freecad_path(path: str | tuple, doc: Optional[Any]) -> Dict[str, Any]:
     result['sub_path_str'] = '.'.join(result['sub_path'])
     return result
 
-def get_selected_shape_object(selection_obj, return_linked_obj = True):
+def get_selected_shape_object(selection_obj, return_linked_obj = True, doc = None):
     """
     Extracts the underlying shape object (e.g., Part::Box) from a SelectionObject,
     even if a sub-element like a face, edge, or vertex was selected.
@@ -775,7 +776,8 @@ def get_selected_shape_object(selection_obj, return_linked_obj = True):
     :param selection_obj: A SelectionObject obtained from Gui.Selection.getSelectionEx()
     :return: The Part::Feature object (or similar with a 'Shape' attribute), or None if not found
     """
-    doc = selection_obj.Document
+    if not doc:
+        doc = selection_obj.Document
     sub_names = selection_obj.SubElementNames  # e.g., ['camera_plate001.Box.Face2']
 
     # If no sub-elements are selected, return None

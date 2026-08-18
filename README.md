@@ -2,9 +2,6 @@
 
 RobotCAD is a FreeCAD workbench to generate robot description packages (xacro or URDF) for the Robot Operating System, [ROS2].
 
-
-#### Poll about RobotCAD learning course <a href="https://github.com/drfenixion/freecad.robotcad/discussions/120" target="_blank">here</a>
-
 <a href="https://youtu.be/T_OGQFc9IMk" target="_blank">RobotCAD 3.0.0 workflow demo</a>
 <a href="https://youtu.be/T_OGQFc9IMk" target="_blank"><img src="https://github.com/user-attachments/assets/2a85ad00-bfe0-4242-bbc1-178cf92cfc0e" alt="RobotCAD 3.0.0 workflow video"/></a>
 
@@ -52,7 +49,7 @@ Video of creating controllable models: <br />
 1. Integrated ready to use models library
 1. Explode View with adjustable offset and states memory.
 1. Basic code generator:
-    1. ROS2 package with launchers for Gazebo, RViz
+    1. ROS2 package with launchers for Gazebo, RViz, PX4, Sverk
     1. URDF (kinematics, mass, inertia, sensors, etc.)
     1. Meshes
     1. SDF maps created by "Custom world" tool (map editor)
@@ -66,7 +63,7 @@ Video of creating controllable models: <br />
         1. Init Git with submodules for dependencies management
         1. Docker related code (dockerfiles, etc) (you dont need to manually install ROS2 or Gazebo, it will be installed automatically in docker)
         1. ros2_controllers (integrated in your package with ros2_control launcher)
-        1. Specific robot types code (multicopter - PX4 + Gazebo + ROS2)
+        1. Multicopter - PX4 or Sverk (PX4 based) + Gazebo + ROS2, all required code for your custom model and dependencies.
         1. Nvidia video cards container support
         1. README instruction how to use
 1. all features from CROSS workbench
@@ -94,6 +91,8 @@ Search for RobotCAD in the Addon Manager
 Click Install
 
 Restart FreeCAD
+
+<img width="2560" height="1576" alt="addon_manager" src="https://github.com/user-attachments/assets/9530e6e9-aa07-47b8-bb73-35971f3b2520" />
 
 ## Fast install and run script
 _Script installs also ROS2 + Gazebo in Docker, its required for some tools. FreeCAD will be run from inside the Docker._
@@ -327,7 +326,7 @@ If you want to work on this workbench you have the following options (choose one
 ```
 git clone https://github.com/drfenixion/freecad.robotcad.git
 cd freecad.robotcad/docker
-bash run.bash -d
+bash run.bash -dfc
 ```
 - Install RobotCAD manually via Conda, see installation section. Run FreeCAD with DEBUG=1 env.
 ```

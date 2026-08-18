@@ -18,7 +18,7 @@ from .ui import command_new_observer # noqa: F401
 from .ui import command_new_pose # noqa: F401
 from .ui import command_new_robot # noqa: F401
 from .ui import command_explode_links # noqa: F401
-from .ui import command_ik_tool # noqa: F401
+# from .ui import command_ik_tool # noqa: F401
 from .ui import command_new_trajectory # noqa: F401
 from .ui import command_new_controller # noqa: F401
 from .ui import command_new_sensor # noqa: F401
@@ -54,12 +54,16 @@ from .ui import command_calculate_mass_and_inertia # noqa: F401
 from .ui import command_world_generator # noqa: F401
 from .ui import command_transfer_project_to_external_code_generator # noqa: F401
 from .ui import command_wb_settings # noqa: F401
-from .ui import command_generate_robot_by_text # noqa: F401
+from .ui import command_generate_robot_by_text  # noqa: F401
+from .ui import command_about  # noqa: F401
 
 #CROSS sensors
 from .ui import command_new_lidar2d  # noqa: F401
 from .ui import command_new_rgb_camera  # noqa: F401
 from .ui import command_new_ultrasound  # noqa: F401
+
+#CROSS vacuum gripper
+from .ui import command_new_vacuum_gripper  # noqa: F401
 
 from .wb_utils import ICON_PATH
 from . import wb_constants
@@ -92,6 +96,7 @@ class CrossWorkbench(fcgui.Workbench):
             'NewJointsFilledSpider',  # Defined in ./ui/command_new_joints_filled_spider_connect.py.
             'NewController',  # Defined in ./ui/command_new_controller.py.
             'NewSensor',  # Defined in ./ui/command_new_sensor.py.
+            'NewVacuumGripper',  # Defined in ./ui/command_new_vacuum_gripper.py.
             'GenerateRobotByText',  # Defined in ./ui/command_generate_robot_by_text.py.
             'OpenModelsLibrary',  # Defined in ./ui/command_open_models_library.py.
             'NewWorkcell',  # Defined in ./ui/command_new_workcell.py.
@@ -118,7 +123,7 @@ class CrossWorkbench(fcgui.Workbench):
             # 'SimplifyMesh',  # Defined in ./ui/command_simplify_mesh.py.
             'GetPlanningScene',  # Defined in ./ui/command_get_planning_scene.py.
             'UpdatePlanningScene',  # Defined in ./ui/command_update_planning_scene.py.
-            'IKTool',  # Defined in ./ui/command_ik_tool.py.
+            # 'IKTool',  # Defined in ./ui/command_ik_tool.py.
             'NewAttachedCollisionObject',  # Defined in ./ui/command_new_attached_collision_object.py.
             'NewPose',  # Defined in ./ui/command_new_pose.py.
             'NewTrajectory',  # Defined in ./ui/command_new_trajectory.py.
@@ -132,7 +137,8 @@ class CrossWorkbench(fcgui.Workbench):
             'UrdfExport',  # Defined in ./ui/command_urdf_export.py.
             'TransferProjectToExternalCodeGenerator',  # Defined in ./ui/command_transfer_project_to_external_code_generator.py.
             'WbSettings',  # Defined in ./ui/command_wb_settings.py.
-            'Reload',  # Comment out to disable this developer tool.
+            'AboutRobotCAD',  # Defined in ./ui/command_about.py.
+            # 'Reload',  # Developer tool, hidden from toolbar.
         ]
         self.appendToolbar('RobotCAD', toolbar_commands)
 
@@ -148,6 +154,7 @@ class CrossWorkbench(fcgui.Workbench):
             'NewJointsFilledSpider',  # Defined in ./ui/command_new_joints_filled_spider_connect.py.
             'NewController',  # Defined in ./ui/command_new_controller.py.
             'NewSensor',  # Defined in ./ui/command_new_sensor.py.
+            'NewVacuumGripper',  # Defined in ./ui/command_new_vacuum_gripper.py.
             'GenerateRobotByText',  # Defined in ./ui/command_generate_robot_by_text.py.
             'OpenModelsLibrary',  # Defined in ./ui/command_open_models_library.py.
             'NewWorkcell',  # Defined in ./ui/command_new_workcell.py.
@@ -188,7 +195,7 @@ class CrossWorkbench(fcgui.Workbench):
             # "Live" debugging.
             'GetPlanningScene',  # Defined in ./ui/command_get_planning_scene.py.
             'UpdatePlanningScene',  # Defined in ./ui/command_update_planning_scene.py.
-            'IKTool',  # Defined in ./ui/command_ik_tool.py.
+            # 'IKTool',  # Defined in ./ui/command_ik_tool.py.
             'NewAttachedCollisionObject',  # Defined in ./ui/command_new_attached_collision_object.py.
             'NewPose',  # Defined in ./ui/command_new_pose.py.
             'BringRobotToPose',  # Defined in ./ui/command_bring_robot_to_pose.py.
@@ -209,6 +216,9 @@ class CrossWorkbench(fcgui.Workbench):
             'Separator',
             # Workbench settings.
             'WbSettings',  # Defined in ./ui/command_wb_settings.py.
+            'Separator',
+            # About.
+            'AboutRobotCAD',  # Defined in ./ui/command_about.py.
         ]
 
         self.appendMenu('RobotCAD', menu_commands)

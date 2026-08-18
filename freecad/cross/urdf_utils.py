@@ -705,7 +705,7 @@ def clean_and_unique_string(input_str: str, add_random_postfix: bool = False) ->
     return cleaned_str
 
 
-def _get_mesh_filename(obj: DO, add_project_prefix:bool = False, add_random_postfix:bool = False) -> str:
+def _get_mesh_filename(obj: DO, add_project_prefix:bool = True, add_random_postfix:bool = False) -> str:
     """Return the mesh filename for a FreeCAD object."""
     if hasattr(obj, 'LinkedObject'):
         linked_obj = obj.LinkedObject
@@ -722,7 +722,9 @@ def _get_mesh_filename(obj: DO, add_project_prefix:bool = False, add_random_post
         else:
             doc_name = 'unsaved_doc'
 
-        name = f'{doc_name}_{label}'
+        # ignore doc prefix for root doc
+        if fc.ActiveDocument.Name != doc_name:
+            name = f'{doc_name}_{label}'
 
     name = clean_and_unique_string(name, add_random_postfix = add_random_postfix)
     return get_valid_filename(f'{name}.dae')

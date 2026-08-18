@@ -53,6 +53,7 @@ from .wb_utils import get_controllers
 from .wb_utils import get_broadcasters
 from .wb_utils import get_rel_and_abs_path
 from .wb_utils import get_valid_urdf_name
+from .wb_utils import get_vacuum_grippers
 from .wb_utils import is_joint
 from .wb_utils import is_robot
 from .wb_utils import is_controller
@@ -352,15 +353,19 @@ class RobotProxy(ProxyBase):
 
         add_property(
             obj, 'App::PropertyEnumeration', 'RobotType', 'Robot',
-            'Used by extended code generator. For multicopter use ROS2 Iron code generation because PX4 does not released for Ubuntu 24.04 yet',
+            # this description will be persisted for old projects (saved in project) and will be updated only for new created Robot.
+            'Used by extended code generator. Sverk is available only for ROS2 Jazzy and upper.', 
         )
-        obj.RobotType=["nonspecific","multicopter"]
+        obj.RobotType=["nonspecific","multicopter","multicopter_sverk"]
 
         add_property(
             obj, 'App::PropertyEnumeration', 'GenerateCodeForRosVersion', 'Robot',
             'Generate code for choosed ROS version.',
         )
         obj.GenerateCodeForRosVersion=["jazzy", "iron"]
+        
+        # Initialize RobotType enum based on GenerateCodeForRosVersion
+        self._update_robot_type_enum(obj)
 
         add_property(
             obj, 'App::PropertyStringList', 'ExplodeViewStates', 'Internal',
@@ -401,6 +406,9 @@ class RobotProxy(ProxyBase):
                 obj.OutputPath = rel_path
         if prop == 'Placement':
             self.compute_poses()
+        if prop == 'GenerateCodeForRosVersion':
+            # Update RobotType enum based on GenerateCodeForRosVersion
+            self._update_robot_type_enum(obj)
 
     def onDocumentRestored(self, obj):
         """Handle the object after a document restore.
@@ -451,6 +459,7 @@ class RobotProxy(ProxyBase):
                 'Cross::Joint',
                 'Cross::AttachedCollisionObject',
                 'Cross::RgbCamera',
+                'Cross::rgbd_camera',                
                 'Cross::Lidar2d',
                 'Cross::Ultrasound',
                 'Cross::Controller',
@@ -531,6 +540,24 @@ class RobotProxy(ProxyBase):
         for aco in acos:
             aco.removeObjectsFromDocument()  # Remove children.
             self.robot.Document.removeObject(aco.Name)
+
+    def _update_robot_type_enum(self, obj: CrossRobot) -> None:
+        """Update RobotType enum based on GenerateCodeForRosVersion.
+        
+        multicopter_sverk is only available when GenerateCodeForRosVersion is 'jazzy'.
+        """
+        if obj.GenerateCodeForRosVersion == 'jazzy':
+            # Include multicopter_sverk for jazzy
+            robot_types = ["nonspecific", "multicopter", "multicopter_sverk"]
+        else:
+            # Exclude multicopter_sverk for other versions
+            robot_types = ["nonspecific", "multicopter"]
+            # If current value is multicopter_sverk, reset to nonspecific
+            if obj.RobotType == "multicopter_sverk":
+                obj.RobotType = "multicopter"
+        
+        # Update the enumeration
+        obj.RobotType = robot_types
 
     def set_joint_enum(self) -> None:
         """Set the enum for Child and Parent of all joints."""
@@ -1001,6 +1028,7 @@ class RobotProxy(ProxyBase):
                 'meshes/',
                 'urdf/',
                 'worlds/',
+                'config/',
         ]
 
         if interactive and fc.GuiUp:
@@ -1079,6 +1107,7 @@ class RobotProxy(ProxyBase):
 
         robot_controllers_yaml = self.get_robot_controllers_yaml()
         save_yaml(robot_controllers_yaml, output_path / f'overcross/{controllers_config_file_name}')
+        save_yaml(robot_controllers_yaml, description_package_path / 'config' / f'{controllers_config_file_name}')
 
         save_xml(xml, urdf_path)
         export_templates(
@@ -1092,7 +1121,10 @@ class RobotProxy(ProxyBase):
             sensors_file=sensors_file,
             sensors_urdf=sensors_urdf,
             robot_name=robot_name,
-            cameras_topics_comma_sep=self.get_sensors_topics_by_types(sensor_types = ['camera','depth_camera','wideanglecamera','rgbd_camera'])
+            cameras_topics_comma_sep=self.get_sensors_topics_by_types(sensor_types = ['camera','depth_camera','wideanglecamera','rgbd_camera']),
+            sensors_bridge_args=self.get_sensors_bridge_args(),
+            px4AirframeId=self.get_px4_airframe_id(),
+            vacuum_gripper_plugins=self.get_vacuum_gripper_plugins_xml(),
         )
 
         self.copy_custom_worlds(description_package_path / 'worlds')
@@ -1166,6 +1198,19 @@ class RobotProxy(ProxyBase):
             sensors_xml += '\n\n' + sdf_dict_to_xml(sensor_xml_as_dict, full_document = False, pretty = True)
 
         return sensors_xml
+
+    def get_vacuum_gripper_plugins_xml(self) -> str:
+        """Return the SDF XML for all vacuum gripper plugins on links."""
+        from .vacuum_gripper_proxy import get_vacuum_gripper_plugin_xml
+
+        plugins_xml = ''
+        for link in self.get_links():
+            for vg in link.Proxy.get_vacuum_grippers():
+                link_urdf_name = get_valid_urdf_name(ros_name(link))
+                plugins_xml += '\n' + get_vacuum_gripper_plugin_xml(vg, link_urdf_name)
+                plugins_xml += '\n'
+
+        return plugins_xml
     
     def get_sensors_topics_by_types(self, sensor_types: list) -> str:
         """Return comma separated sensors topics by sensors type"""
@@ -1186,6 +1231,55 @@ class RobotProxy(ProxyBase):
                     pass                    
 
         return ','.join(topics)
+
+    def get_px4_airframe_id(self) -> str:
+        """Return PX4 airframe ID.
+        """
+        return '104001'
+
+    def get_sensors_bridge_args(self) -> str:
+        """Return comma-separated parameter_bridge arguments for all non-camera sensors.
+
+        Maps Gz sensor topics to ROS2 topics with correct message types for
+        parameter_bridge node. Camera-type sensors are handled separately by
+        image_bridge.
+
+        Each argument follows the format: /topic@ROS2_MSG_TYPE[ignition.msgs.GZ_MSG_TYPE
+        where '[' indicates Gz-to-ROS2 direction.
+        """
+        # Mapping of Gz sensor types to (ROS2 msg type, Gz msg type).
+        sensor_bridge_mapping = {
+            'gpu_lidar': ('sensor_msgs/msg/LaserScan', 'ignition.msgs.LaserScan'),
+            'gpu_ray': ('sensor_msgs/msg/LaserScan', 'ignition.msgs.LaserScan'),
+            'imu': ('sensor_msgs/msg/Imu', 'ignition.msgs.IMU'),
+            'magnetometer': ('sensor_msgs/msg/MagneticField', 'ignition.msgs.Magnetometer'),
+            'navsat': ('sensor_msgs/msg/NavSatFix', 'ignition.msgs.NavSat'),
+            'altimeter': ('sensor_msgs/msg/Altimeter', 'ignition.msgs.Altimeter'),
+            'contact': ('ros_gz_interfaces/msg/Contacts', 'ignition.msgs.Contacts'),
+            'force_torque': ('geometry_msgs/msg/WrenchStamped', 'ignition.msgs.Wrench'),
+            'air_pressure': ('sensor_msgs/msg/FluidPressure', 'ignition.msgs.FluidPressure'),
+        }
+
+        # Camera types handled by image_bridge.
+        camera_types = ['camera', 'depth_camera', 'wideanglecamera', 'rgbd_camera']
+
+        args = []
+        for sensor_xml_as_dict in self.get_sensors_data().values():
+            try:
+                sensor_type = sensor_xml_as_dict['gazebo']['sensor']['@type']
+                topic = sensor_xml_as_dict['gazebo']['sensor']['topic']
+
+                # Skip camera types (handled by image_bridge).
+                if sensor_type in camera_types:
+                    continue
+
+                if sensor_type in sensor_bridge_mapping:
+                    ros_msg, gz_msg = sensor_bridge_mapping[sensor_type]
+                    args.append(f"'{topic}@{ros_msg}[{gz_msg}'")
+            except KeyError:
+                pass
+
+        return ','.join(args)
 
     def get_sensors_data(self, parameter_full_name_glue: str = wb_constants.ROS2_CONTROLLERS_PARAM_FULL_NAME_GLUE) -> dict:
         """Get sensors data as sensors dictionaries from all elements (links, joints) of robot"""
@@ -1394,6 +1488,20 @@ class RobotProxy(ProxyBase):
         robotMetaXmlDoc = parseString(robotMetaXml)
         jointsXmlDoc = parseString(jointsXml)
         robotMetaXmlDoc.getElementsByTagName("robotMeta").item(0).appendChild(jointsXmlDoc.getElementsByTagName("joints").item(0))
+
+        # Reuse get_vacuum_gripper_plugins_xml() to avoid duplicating iteration logic.
+        vacuum_gripper_plugins = self.get_vacuum_gripper_plugins_xml()
+        if vacuum_gripper_plugins.strip():
+            vacuum_grippers_xml = f"""<?xml version="1.0" ?>
+    <vacuum_grippers>
+{vacuum_gripper_plugins}
+    </vacuum_grippers>
+            """
+            vacuum_grippers_xml_doc = parseString(vacuum_grippers_xml)
+            robotMetaXmlDoc.getElementsByTagName("robotMeta").item(0).appendChild(
+                vacuum_grippers_xml_doc.getElementsByTagName("vacuum_grippers").item(0),
+            )
+
         robotMetaXml = robotMetaXmlDoc.toprettyxml(indent=' ', newl='\n', encoding=None, standalone=None)
 
         return robotMetaXml
@@ -1907,12 +2015,14 @@ def make_filled_robot_from_assembly(assembly:DO, robot:CrossRobot = None) -> Cro
         reverse=True
     )
     # separated root joint
-    root_joint = assembly_joints_sorted[0]
-    if root_joint['is_link1_root_assembly_link'] == True:
-        root_joint['chain_direction'] = 'reverse'
-    elif root_joint['is_link2_root_assembly_link'] == True:
-        root_joint['chain_direction'] = 'forward'    
-    assembly_joints_sorted.remove(root_joint) # we will use root_joint separetly 
+    root_joint = None
+    if len(assembly_joints_sorted):
+        root_joint = assembly_joints_sorted[0]
+        if root_joint['is_link1_root_assembly_link'] == True:
+            root_joint['chain_direction'] = 'reverse'
+        elif root_joint['is_link2_root_assembly_link'] == True:
+            root_joint['chain_direction'] = 'forward'    
+        assembly_joints_sorted.remove(root_joint) # we will use root_joint separetly 
     
 
     progressBar = get_progress_bar(
@@ -1928,32 +2038,32 @@ def make_filled_robot_from_assembly(assembly:DO, robot:CrossRobot = None) -> Cro
     QtGui.QApplication.processEvents()
 
     joint_chain_tree = []
+    if root_joint:
+        joint_chain_tree.append(root_joint)
+        i+=1
+        progressBar.setValue(i)
+        QtGui.QApplication.processEvents()
+        child_joint = root_joint
+    else:
+        error('Add any joint to FreeCAD Assembly for convertation to RobotCAD Robot.', True)
     while len(assembly_joints_sorted):
-        if root_joint:
-            joint_chain_tree.append(root_joint)
+        try:
+            child_joint = next(get_next_child_joint(child_joint))
+            joint_chain_tree.append(child_joint)
             i+=1
             progressBar.setValue(i)
             QtGui.QApplication.processEvents()
-            child_joint = root_joint
-            root_joint = None
-        else:
-            try:
-                child_joint = next(get_next_child_joint(child_joint))
-                joint_chain_tree.append(child_joint)
-                i+=1
-                progressBar.setValue(i)
-                QtGui.QApplication.processEvents()
-            except StopIteration:
-                for chain_joint in joint_chain_tree:
-                    try:
-                        child_joint = next(get_next_branch_root_joint(chain_joint))
-                        joint_chain_tree.append(child_joint)
-                        i+=1
-                        progressBar.setValue(i)
-                        QtGui.QApplication.processEvents()
-                        break
-                    except StopIteration:
-                        pass
+        except StopIteration:
+            for chain_joint in joint_chain_tree:
+                try:
+                    child_joint = next(get_next_branch_root_joint(chain_joint))
+                    joint_chain_tree.append(child_joint)
+                    i+=1
+                    progressBar.setValue(i)
+                    QtGui.QApplication.processEvents()
+                    break
+                except StopIteration:
+                    pass
     progressBar.close()
     QtGui.QApplication.processEvents()
 

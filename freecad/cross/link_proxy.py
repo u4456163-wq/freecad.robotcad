@@ -25,6 +25,7 @@ from .urdf_utils import urdf_visual_from_object
 from .utils import attr_equals
 from .utils import warn_unsupported
 from .wb_utils import ICON_PATH, get_link_sensors
+from .wb_utils import get_vacuum_grippers
 from .wb_utils import get_chain
 from .wb_utils import get_joints
 from .wb_utils import get_links
@@ -32,6 +33,7 @@ from .wb_utils import get_valid_urdf_name
 from .wb_utils import is_joint
 from .wb_utils import is_link
 from .wb_utils import is_sensor_link
+from .wb_utils import is_vacuum_gripper
 from .wb_utils import is_name_used
 from .wb_utils import is_primitive
 from .wb_utils import is_robot
@@ -45,6 +47,7 @@ from .link import Link as CrossLink  # A Cross::Link, i.e. a DocumentObject with
 from .robot import Robot as CrossRobot  # A Cross::Robot, i.e. a DocumentObject with Proxy "Robot". # noqa: E501
 from .sensors.sensor import Sensor as CrossSensor  # A Cross::Sensor, i.e. a DocumentObject with Proxy "SensorProxyJoint" or "SensorProxyJoint". # noqa: E501
 DO = fc.DocumentObject
+CrossVacuumGripper = DO  # A Cross::VacuumGripper.
 DOList = List[DO]
 VPDO = NewType('FreeCADGui.ViewProviderDocumentObject', DO)  # Don't want to import FreeCADGui here. # noqa: E501
 AppLink = DO  # TypeId == 'App::Link'.
@@ -204,6 +207,7 @@ class LinkProxy(ProxyBase):
         self._ref_child_joints: Optional[list[CrossJoint]] = []
 
         self._sensors: Optional[list[CrossSensor]] = None
+        self._vacuum_grippers: Optional[list[CrossVacuumGripper]] = None
 
         self.init_extensions(obj)
         self.init_properties(obj)
@@ -349,20 +353,39 @@ class LinkProxy(ProxyBase):
     def onChanged(self, obj: CrossLink, prop: str) -> None:
         if prop == 'Group':
             self._sensors = None
+            self._vacuum_grippers = None
             self._cleanup_children()
         if prop in ('Real', 'Visual', 'Collision'):
             self.update_fc_links()
             self._cleanup_children()
         if prop in ('Label', 'Label2'):
             robot = self.get_robot()
+            
             if robot and hasattr(robot, 'Proxy'):
                 robot.Proxy.set_joint_enum()
+
             if (
                 robot
                 and is_name_used(obj, robot)
                 and getattr(obj, prop) != self.old_ros_name
             ):
                 setattr(obj, prop, self.old_ros_name)
+            else:
+                # Update Parent and Child joints that reference the old Label
+                if robot and self.old_ros_name:
+                    old_label = self.old_ros_name
+                    new_label = getattr(obj, prop)
+                    joints = get_joints(robot.Group)
+                    for joint in joints:
+                        # Update Parent if it matches old Label
+                        if hasattr(joint, 'Parent'):
+                            if joint.Parent == old_label:
+                                joint.Parent = new_label
+                        # Update Child if it matches old Label
+                        if hasattr(joint, 'Child'):
+                            if joint.Child == old_label:
+                                joint.Child = new_label
+
         if prop == 'Placement':
             if not self.is_execute_ready():
                 return
@@ -409,7 +432,7 @@ class LinkProxy(ProxyBase):
         removed_objects: set[DO] = set()
         # Group is managed by us and the containing robot.
         for o in self.link.Group:
-            if is_freecad_link(o) or is_sensor_link(o):
+            if is_freecad_link(o) or is_sensor_link(o) or is_vacuum_gripper(o):
                 # Supported, and managed by us.
                 continue
             warn_unsupported(o, by='CROSS::Link', gui=True)
@@ -626,6 +649,7 @@ class LinkProxy(ProxyBase):
             + self._fc_links_visual
             + self._fc_links_collision
             + self.get_sensors()
+            + self.get_vacuum_grippers()
         )
         if new_group != link.Group:
             link.Group = new_group
@@ -746,6 +770,15 @@ class LinkProxy(ProxyBase):
             return []
         self._sensors = get_link_sensors(self.link.Group)
         return list(self._sensors)  # A copy.
+
+    def get_vacuum_grippers(self) -> list[CrossVacuumGripper]:
+        """Return the list of CROSS vacuum grippers in the order of creation."""
+        if self._vacuum_grippers is not None:
+            return list(self._vacuum_grippers)
+        if not self.is_execute_ready():
+            return []
+        self._vacuum_grippers = get_vacuum_grippers(self.link.Group)
+        return list(self._vacuum_grippers)
 
 
 class _ViewProviderLink(ProxyBase):
@@ -895,19 +928,11 @@ def make_robot_link_filled(obj:fc.DO, create_parts_group:bool = False, assembly_
     fc_link_to_obj.adjustRelativeLinks(part)
     part.addObject(fc_link_to_obj)
 
-    if create_parts_group:
-        container = fc.ActiveDocument.getObject('robot_parts')
-        if not container:
-            container = add_object(fc.ActiveDocument, 'App::DocumentObjectGroup', 'robot_parts')
-            container.Visibility = False
-        part.Visibility = False
-        container.addObject(part)
-
-    parent_of_obj = None
-    try:
-        parent_of_obj = obj.Parents[0][0]
-    except (KeyError, IndexError, AttributeError):
-        pass
+    # parent_of_obj = None
+    # try:
+    #     parent_of_obj = obj.Parents[0][0]
+    # except (KeyError, IndexError, AttributeError):
+    #     pass
 
     # #add created part-wrapper as child to parent of object
     # if parent_of_obj:
@@ -921,15 +946,23 @@ def make_robot_link_filled(obj:fc.DO, create_parts_group:bool = False, assembly_
     link.Visual = part
     if assembly_reference:
         link.AssemblyReference = assembly_reference
-
     link.ViewObject.ShowReal = False
     link.ViewObject.ShowReal = True
+
+    if create_parts_group:
+        container = fc.ActiveDocument.getObject('robot_parts')
+        if not container:
+            container = add_object(fc.ActiveDocument, 'App::DocumentObjectGroup', 'robot_parts')
+            container.Visibility = False
+        part.Visibility = False
+        container.addObject(part)
+
     fc.ActiveDocument.recompute()
 
     return link
 
 
-def make_robot_links_filled(objects:list[fc.DO] = [], robot:CrossRobot | None = None) -> list[CrossLink] | False :
+def make_robot_links_filled(objects:list[fc.DO] = [], robot:CrossRobot | None = None, create_parts_group:bool = True) -> list[CrossLink] | False :
     ''' Make robot links and fill Real and Visual of it by selected objects  '''
 
     if len(objects):
@@ -939,14 +972,23 @@ def make_robot_links_filled(objects:list[fc.DO] = [], robot:CrossRobot | None = 
 
     links:list[CrossLink] = []
     for el in selection:
-        res = make_robot_link_filled(el)
+        res = make_robot_link_filled(el, create_parts_group)
         if is_link(res):
             link = res
             links.append(link)
+            el.Visibility = False
+            
             if robot:
                 link.adjustRelativeLinks(robot)
                 robot.addObject(link)
 
+            if create_parts_group:
+                folder = 'robot_parts_origins'
+                container = fc.ActiveDocument.getObject(folder)
+                if not container:
+                    container = add_object(fc.ActiveDocument, 'App::DocumentObjectGroup', folder)
+                    container.Visibility = False
+                container.addObject(el)
     return links
 
 
