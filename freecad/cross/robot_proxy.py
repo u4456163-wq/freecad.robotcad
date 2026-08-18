@@ -2015,12 +2015,14 @@ def make_filled_robot_from_assembly(assembly:DO, robot:CrossRobot = None) -> Cro
         reverse=True
     )
     # separated root joint
-    root_joint = assembly_joints_sorted[0]
-    if root_joint['is_link1_root_assembly_link'] == True:
-        root_joint['chain_direction'] = 'reverse'
-    elif root_joint['is_link2_root_assembly_link'] == True:
-        root_joint['chain_direction'] = 'forward'    
-    assembly_joints_sorted.remove(root_joint) # we will use root_joint separetly 
+    root_joint = None
+    if len(assembly_joints_sorted):
+        root_joint = assembly_joints_sorted[0]
+        if root_joint['is_link1_root_assembly_link'] == True:
+            root_joint['chain_direction'] = 'reverse'
+        elif root_joint['is_link2_root_assembly_link'] == True:
+            root_joint['chain_direction'] = 'forward'    
+        assembly_joints_sorted.remove(root_joint) # we will use root_joint separetly 
     
 
     progressBar = get_progress_bar(
@@ -2036,32 +2038,32 @@ def make_filled_robot_from_assembly(assembly:DO, robot:CrossRobot = None) -> Cro
     QtGui.QApplication.processEvents()
 
     joint_chain_tree = []
+    if root_joint:
+        joint_chain_tree.append(root_joint)
+        i+=1
+        progressBar.setValue(i)
+        QtGui.QApplication.processEvents()
+        child_joint = root_joint
+    else:
+        error('Add any joint to FreeCAD Assembly for convertation to RobotCAD Robot.', True)
     while len(assembly_joints_sorted):
-        if root_joint:
-            joint_chain_tree.append(root_joint)
+        try:
+            child_joint = next(get_next_child_joint(child_joint))
+            joint_chain_tree.append(child_joint)
             i+=1
             progressBar.setValue(i)
             QtGui.QApplication.processEvents()
-            child_joint = root_joint
-            root_joint = None
-        else:
-            try:
-                child_joint = next(get_next_child_joint(child_joint))
-                joint_chain_tree.append(child_joint)
-                i+=1
-                progressBar.setValue(i)
-                QtGui.QApplication.processEvents()
-            except StopIteration:
-                for chain_joint in joint_chain_tree:
-                    try:
-                        child_joint = next(get_next_branch_root_joint(chain_joint))
-                        joint_chain_tree.append(child_joint)
-                        i+=1
-                        progressBar.setValue(i)
-                        QtGui.QApplication.processEvents()
-                        break
-                    except StopIteration:
-                        pass
+        except StopIteration:
+            for chain_joint in joint_chain_tree:
+                try:
+                    child_joint = next(get_next_branch_root_joint(chain_joint))
+                    joint_chain_tree.append(child_joint)
+                    i+=1
+                    progressBar.setValue(i)
+                    QtGui.QApplication.processEvents()
+                    break
+                except StopIteration:
+                    pass
     progressBar.close()
     QtGui.QApplication.processEvents()
 

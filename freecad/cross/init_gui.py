@@ -54,7 +54,8 @@ from .ui import command_calculate_mass_and_inertia # noqa: F401
 from .ui import command_world_generator # noqa: F401
 from .ui import command_transfer_project_to_external_code_generator # noqa: F401
 from .ui import command_wb_settings # noqa: F401
-from .ui import command_generate_robot_by_text # noqa: F401
+from .ui import command_generate_robot_by_text  # noqa: F401
+from .ui import command_about  # noqa: F401
 
 #CROSS sensors
 from .ui import command_new_lidar2d  # noqa: F401
@@ -136,7 +137,8 @@ class CrossWorkbench(fcgui.Workbench):
             'UrdfExport',  # Defined in ./ui/command_urdf_export.py.
             'TransferProjectToExternalCodeGenerator',  # Defined in ./ui/command_transfer_project_to_external_code_generator.py.
             'WbSettings',  # Defined in ./ui/command_wb_settings.py.
-            'Reload',  # Comment out to disable this developer tool.
+            'AboutRobotCAD',  # Defined in ./ui/command_about.py.
+            # 'Reload',  # Developer tool, hidden from toolbar.
         ]
         self.appendToolbar('RobotCAD', toolbar_commands)
 
@@ -214,6 +216,9 @@ class CrossWorkbench(fcgui.Workbench):
             'Separator',
             # Workbench settings.
             'WbSettings',  # Defined in ./ui/command_wb_settings.py.
+            'Separator',
+            # About.
+            'AboutRobotCAD',  # Defined in ./ui/command_about.py.
         ]
 
         self.appendMenu('RobotCAD', menu_commands)
